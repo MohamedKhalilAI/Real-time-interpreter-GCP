@@ -3,25 +3,14 @@ Real-Time Facial Expression Detector  (optimised)
 ===================================================
 Uses webcam + Google Cloud Vision API to detect emotions live.
 
-Optimisations vs original
---------------------------
-* API calls run in a background thread  →  camera stays smooth / truly real-time
-* Frame is downscaled to 640 px wide before encoding  →  faster + cheaper API
-* Display loop capped at ~30 fps via waitKey(33)  →  lower CPU load
-* Semi-transparent dark panel behind emotion bars  →  readable on any background
-* Status bar fixed (two texts no longer drawn on the same pixel)
-* FPS counter in top-right corner
-* "Scanning…" badge while the background thread is active
-
 Requirements
 ------------
-    I have tried it on python 3.12
     pip install opencv-python requests
 
 Usage
 -----
-    python face_expression_detector.py --api-key YOUR_API_KEY
-    python face_expression_detector.py --api-key YOUR_API_KEY --interval 2
+    python face_expression_detector.py
+    python face_expression_detector.py --interval 2
 
 Controls
 --------
@@ -38,14 +27,16 @@ import argparse
 import time
 import threading
 from datetime import datetime
+import argparse
+from dotenv import load_dotenv
+import os
 
-# ── Config ─────────────────────────────────────────────────────────────────────
 VISION_URL    = "https://vision.googleapis.com/v1/images:annotate"
-SCAN_INTERVAL = 3.0          # seconds between API calls (runtime-adjustable)
-JPEG_QUALITY  = 65           # encode quality for the *API* copy (not display)
-API_MAX_WIDTH = 640          # downscale to this width before sending to API
+SCAN_INTERVAL = 3.0         
+JPEG_QUALITY  = 65        
+API_MAX_WIDTH = 640          
 MAX_FACES     = 5
-TARGET_FPS    = 30           # display frame-rate cap
+TARGET_FPS    = 30           
 
 SCORE = {
     "VERY_UNLIKELY": 0,
@@ -59,14 +50,13 @@ SCORE = {
 EMOTIONS = ["joyLikelihood", "sorrowLikelihood", "angerLikelihood", "surpriseLikelihood"]
 LABELS   = ["Joy", "Sorrow", "Anger", "Surprise"]
 COLORS   = [
-    ( 50, 200,  50),   # Joy     — green  (BGR)
-    (180,  80,  50),   # Sorrow  — blue-ish
-    ( 50,  50, 220),   # Anger   — red
-    ( 50, 180, 220),   # Surprise— amber-ish
+    ( 50, 200,  50),  
+    (180,  80,  50),  
+    ( 50,  50, 220),
+    ( 50, 180, 220), 
 ]
 
 
-# ── Overlay helpers ─────────────────────────────────────────────────────────────
 
 def alpha_rect(img, x1, y1, x2, y2, color, alpha=0.55):
     """Draw a filled rectangle with transparency (in-place)."""
@@ -81,13 +71,10 @@ def alpha_rect(img, x1, y1, x2, y2, color, alpha=0.55):
 def draw_bar(img, x, y, label, score, color, width=160, height=14):
     cv2.putText(img, label, (x, y - 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.42, (230, 230, 230), 1, cv2.LINE_AA)
-    # track
     cv2.rectangle(img, (x, y), (x + width, y + height), (80, 80, 80), -1)
-    # fill
     filled = int(width * score / 100)
     if filled > 0:
         cv2.rectangle(img, (x, y), (x + filled, y + height), color, -1)
-    # percentage
     cv2.putText(img, f"{score}%", (x + width + 6, y + height - 1),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (210, 210, 210), 1, cv2.LINE_AA)
 
@@ -95,7 +82,7 @@ def draw_bar(img, x, y, label, score, color, width=160, height=14):
 def draw_face_overlay(img, face_data, face_index=0, scale=1.0):
     """Bounding box + emotion bars for one face.
     scale = display_width / api_width  (corrects for pre-send downscaling)."""
-    def s(v):  # scale a single coordinate value
+    def s(v):  
         return int(v * scale)
 
     verts = face_data.get("boundingPoly", {}).get("vertices", [])
@@ -107,7 +94,6 @@ def draw_face_overlay(img, face_data, face_index=0, scale=1.0):
         cv2.putText(img, f"Face {face_index + 1}", (x1, max(y1 - 8, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80), 1, cv2.LINE_AA)
 
-    # semi-transparent panel behind bars
     PANEL_X, PAD = 8, 6
     bar_h    = 22
     n        = len(EMOTIONS)
@@ -125,15 +111,12 @@ def draw_face_overlay(img, face_data, face_index=0, scale=1.0):
 def draw_status(img, status_text, scan_interval, scans_done, next_in, fps, scanning):
     """Bottom status bar — two clearly separated text regions."""
     h, w = img.shape[:2]
-    # dark strip
     alpha_rect(img, 0, h - 34, w, h, (20, 20, 20), alpha=0.75)
 
-    # left: last event
     color = (100, 220, 100) if "detected" in status_text else (180, 180, 180)
     cv2.putText(img, status_text, (8, h - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
 
-    # right: counters
     badge = "  [scanning…]" if scanning else ""
     right = (f"FPS:{fps:4.1f}  |  Scans:{scans_done}  |  "
              f"Next:{next_in:.1f}s  |  Int:{scan_interval:.0f}s  |  "
@@ -143,7 +126,6 @@ def draw_status(img, status_text, scan_interval, scans_done, next_in, fps, scann
                 cv2.FONT_HERSHEY_SIMPLEX, 0.36, (130, 130, 130), 1, cv2.LINE_AA)
 
 
-# ── Vision API (runs in a worker thread) ───────────────────────────────────────
 
 def analyze_frame(frame, api_key):
     """Downscale, encode, POST to Vision API.
@@ -176,7 +158,6 @@ def analyze_frame(frame, api_key):
     return r.get("faceAnnotations", []), scale
 
 
-# ── Main loop ──────────────────────────────────────────────────────────────────
 
 def main(api_key):
     global SCAN_INTERVAL
@@ -188,7 +169,6 @@ def main(api_key):
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    # ask driver for a decent fps; may be ignored but worth trying
     cap.set(cv2.CAP_PROP_FPS, 30)
 
     print("Camera open. Q=quit  S=snapshot  +/-=interval")
@@ -198,13 +178,13 @@ def main(api_key):
     last_scale: float = 1.0
     status_msg  = "Waiting for first scan…"
     scans_done  = 0
-    scanning    = False            # background thread active?
+    scanning    = False          
     scan_lock   = threading.Lock()
 
     fps         = 0.0
-    frame_times: list = []        # rolling window for FPS
+    frame_times: list = []     
 
-    frame_ms  = int(1000 / TARGET_FPS)   # waitKey delay ≈ 33 ms @ 30 fps
+    frame_ms  = int(1000 / TARGET_FPS)  
 
     def run_scan(frame_copy):
         nonlocal last_faces, last_scale, status_msg, scans_done, scanning
@@ -232,14 +212,12 @@ def main(api_key):
 
         now = time.time()
 
-        # ── FPS calculation (rolling 30-frame window) ───────────────────────
         frame_times.append(now)
         if len(frame_times) > 30:
             frame_times.pop(0)
         if len(frame_times) > 1:
             fps = (len(frame_times) - 1) / (frame_times[-1] - frame_times[0])
 
-        # ── Trigger async scan ──────────────────────────────────────────────
         if not scanning and (now - last_scan_time >= SCAN_INTERVAL):
             last_scan_time = now
             scanning       = True
@@ -247,7 +225,6 @@ def main(api_key):
                                  args=(frame.copy(),), daemon=True)
             t.start()
 
-        # ── Build display frame ─────────────────────────────────────────────
         display  = frame.copy()
         next_in  = max(0.0, SCAN_INTERVAL - (now - last_scan_time))
 
@@ -264,7 +241,6 @@ def main(api_key):
 
         cv2.imshow("Face Expression Detector  —  Q to quit", display)
 
-        # ── Key handling ────────────────────────────────────────────────────
         key = cv2.waitKey(frame_ms) & 0xFF
         if key == ord("q"):
             break
@@ -286,14 +262,18 @@ def main(api_key):
     print("Done.")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    
+
+    load_dotenv()
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY not found in .env file")
+
     parser = argparse.ArgumentParser(description="Real-time facial expression detector")
-    parser.add_argument("--api-key",  required=True,
-                        help="Google Cloud Vision API key")
     parser.add_argument("--interval", type=float, default=3.0,
                         help="Seconds between API scans (default: 3)")
     args = parser.parse_args()
     SCAN_INTERVAL = args.interval
-    main(args.api_key)
+    main(api_key)
